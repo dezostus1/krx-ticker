@@ -1,0 +1,99 @@
+# Two self-restarting chains (A, B) on a 10-minute environment wait timer;
+# in the time windows below each tick dispatches a workflow in TARGET_REPO.
+# Decisions: chains.mjs. Setup: README.md.
+
+name: tick
+run-name: tick ${{ inputs.chain || github.event_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: 'A or B (set by the previous tick); empty = manual start'
+        default: ''
+      dispatched_at:
+        description: 'epoch seconds of the dispatch (set by the previous tick)'
+        default: ''
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: tick-10m
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHAIN: ${{ inputs.chain }}
+      TARGET_WORKFLOW: orderbook.yml
+    steps:
+      - name: Guard — the wait timer must exist
+        run: |
+          prev="${{ inputs.dispatched_at }}"
+          if [ -n "$prev" ]; then
+            gap=$(( $(date +%s) - prev ))
+            echo "chain ${CHAIN:-?}: started ${gap}s after dispatch"
+            if [ "$gap" -lt 480 ]; then
+              echo "::error::started ${gap}s after dispatch — environment tick-10m has no 10-minute wait timer"
+              exit 1
+            fi
+          fi
+
+      - name: Checkout chains.mjs
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: chains.mjs
+          sparse-checkout-cone-mode: false
+
+      - name: Keep both chains alive
+        run: |
+          gh run list -R "$GITHUB_REPOSITORY" --workflow tick.yml --limit 80 \
+            --json databaseId,status,displayTitle,createdAt > runs.json
+          node chains.mjs plan --runs runs.json --me "$GITHUB_RUN_ID" --now "$(date +%s)" > plan.txt
+          [ -s plan.txt ] || echo "both chains alive"
+          while read -r act arg chain; do
+            case "$act" in
+              cancel)
+                if gh run cancel "$arg" -R "$GITHUB_REPOSITORY"; then echo "chain $chain: cancelled stuck run $arg"
+                else echo "::warning::chain $chain: could not cancel stuck run $arg"; fi ;;
+              dispatch)
+                gh workflow run tick.yml -R "$GITHUB_REPOSITORY" -f chain="$arg" -f dispatched_at="$(date +%s)"
+                echo "chain $arg: next tick dispatched" ;;
+            esac
+          done < plan.txt
+
+      - name: Dispatch the target in a window
+        env:
+          POKE_TOKEN: ${{ secrets.POLLER_DISPATCH_TOKEN }}
+          TARGET_REPO: ${{ secrets.TARGET_REPO }}
+        run: |
+          # Checked on every tick, not only in a window, so a missing secret shows up at once.
+          if [ -z "$POKE_TOKEN" ] || [ -z "$TARGET_REPO" ]; then echo "::error::secrets POLLER_DISPATCH_TOKEN and TARGET_REPO must be set"; exit 1; fi
+          hm=$(TZ=Asia/Seoul date +%H%M); dow=$(TZ=Asia/Seoul date +%u)
+          want=no
+          if [ "$dow" -le 5 ] && [ "$hm" -ge 0850 ] && [ "$hm" -le 1550 ]; then want=day; fi
+          if [ "$hm" -ge 2005 ] && [ "$hm" -lt 2020 ]; then want=evening; fi
+          if [ "$hm" -ge 0600 ] && [ "$hm" -lt 0615 ]; then want=morning; fi
+          echo "$hm (day $dow): $want"
+          [ "$want" = no ] && exit 0
+          if [ "$CHAIN" = B ]; then sleep 90; fi
+          GH_TOKEN="$POKE_TOKEN" gh run list -R "$TARGET_REPO" --workflow "$TARGET_WORKFLOW" --limit 10 \
+            --json createdAt,displayTitle > target.json
+          decision=$(node chains.mjs poke --runs target.json --now "$(date +%s)")
+          if [ "$decision" != poke ]; then echo "$decision — skipped"; exit 0; fi
+          GH_TOKEN="$POKE_TOKEN" gh workflow run "$TARGET_WORKFLOW" -R "$TARGET_REPO" --ref main -f mode=auto > /dev/null
+          echo "dispatched ($want, chain ${CHAIN:-none})"
+
+      - name: Weekly heartbeat
+        run: |
+          # Keeps GitHub from disabling the schedule after 60 days without activity.
+          [ "$(TZ=Asia/Seoul date +%u)" = 1 ] || exit 0
+          hm=$(TZ=Asia/Seoul date +%H%M); { [ "$hm" -ge 0300 ] && [ "$hm" -lt 0315 ]; } || exit 0
+          [ "$CHAIN" = A ] || exit 0
+          git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" hb
+          cd hb && date -u +%FT%TZ > heartbeat.txt && git add heartbeat.txt
+          git -c user.name="krx-ticker" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "heartbeat" && git push -q

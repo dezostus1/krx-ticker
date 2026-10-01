@@ -1,5 +1,6 @@
 # Two self-restarting chains (A, B) on a 10-minute environment wait timer;
-# in the time windows below each tick dispatches a workflow in TARGET_REPO.
+# in the time windows below each tick dispatches a workflow in the target repo
+# (addressed by numeric id; private, so the id resolves only with the token).
 # Decisions: chains.mjs. Setup: README.md.
 
 name: tick
@@ -29,6 +30,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       CHAIN: ${{ inputs.chain }}
+      TARGET_REPO_ID: '1363804886'
       TARGET_WORKFLOW: orderbook.yml
     steps:
       - name: Guard — the wait timer must exist
@@ -69,10 +71,10 @@ jobs:
       - name: Dispatch the target in a window
         env:
           POKE_TOKEN: ${{ secrets.POLLER_DISPATCH_TOKEN }}
-          TARGET_REPO: ${{ secrets.TARGET_REPO }}
         run: |
           # Checked on every tick, not only in a window, so a missing secret shows up at once.
-          if [ -z "$POKE_TOKEN" ] || [ -z "$TARGET_REPO" ]; then echo "::error::secrets POLLER_DISPATCH_TOKEN and TARGET_REPO must be set"; exit 1; fi
+          if [ -z "$POKE_TOKEN" ]; then echo "::error::secret POLLER_DISPATCH_TOKEN must be set"; exit 1; fi
+          wf="repositories/$TARGET_REPO_ID/actions/workflows/$TARGET_WORKFLOW"
           hm=$(TZ=Asia/Seoul date +%H%M); dow=$(TZ=Asia/Seoul date +%u)
           want=no
           if [ "$dow" -le 5 ] && [ "$hm" -ge 0850 ] && [ "$hm" -le 1550 ]; then want=day; fi
@@ -81,11 +83,11 @@ jobs:
           echo "$hm (day $dow): $want"
           [ "$want" = no ] && exit 0
           if [ "$CHAIN" = B ]; then sleep 90; fi
-          GH_TOKEN="$POKE_TOKEN" gh run list -R "$TARGET_REPO" --workflow "$TARGET_WORKFLOW" --limit 10 \
-            --json createdAt,displayTitle > target.json
+          GH_TOKEN="$POKE_TOKEN" gh api "$wf/runs?per_page=10" \
+            --jq '[.workflow_runs[] | {createdAt: .created_at, displayTitle: .display_title}]' > target.json
           decision=$(node chains.mjs poke --runs target.json --now "$(date +%s)")
           if [ "$decision" != poke ]; then echo "$decision — skipped"; exit 0; fi
-          GH_TOKEN="$POKE_TOKEN" gh workflow run "$TARGET_WORKFLOW" -R "$TARGET_REPO" --ref main -f mode=auto > /dev/null
+          GH_TOKEN="$POKE_TOKEN" gh api -X POST "$wf/dispatches" -f ref=main -f 'inputs[mode]=auto'
           echo "dispatched ($want, chain ${CHAIN:-none})"
 
       - name: Weekly heartbeat

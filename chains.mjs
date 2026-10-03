@@ -46,7 +46,8 @@ export const JOBS = [
       { from: 600, to: 615 },
     ],
   },
-  { name: 'nightly', workflow: 373038400, rule: 'once', inputs: { dry_run: 'false' }, tz: 'UTC', windows: [{ days: [1, 2, 3, 4, 5], from: 2130, to: 2340 }] },
+  // before midnight where the target counts its days, after the US close in every season
+  { name: 'nightly', workflow: 373038400, rule: 'once', inputs: { dry_run: 'false' }, tz: 'Europe/Madrid', windows: [{ days: [1, 2, 3, 4, 5], from: 2230, to: 2400 }] },
   { name: 'morning', workflow: 372734760, rule: 'once', inputs: {}, tz: 'UTC', windows: [{ from: 530, to: 900 }] },
   { name: 'monthly', workflow: 373038402, rule: 'once', inputs: { dry_run: 'false' }, tz: 'UTC', windows: [{ monthDays: [1], from: 315, to: 600 }] },
 ];

@@ -23,8 +23,13 @@ export const ZOMBIE_AFTER_S = 900;
 // old; with runner pick-up and the 5-minute job timeout, one still "in
 // progress" 20 min after dispatch is not coming back.
 export const RUNNING_MAX_AGE_S = 1200;
-// An `every` job was started this recently: skip.
-export const POKE_GAP_S = 480;
+// An `every` job runs once per SLOT_S slot: a tick pokes unless a run that did not fail is
+// already due to land in the slot this poke would land in (a run lands ~LAND_S after it is
+// started). Two chains tick about every 5 minutes between them, so every slot gets its run
+// even though each chain drifts (2026-10-02: a "not within 8 minutes" rule let one 10-minute
+// slot in ~20 go empty), and a failed run is retried within its slot.
+export const SLOT_S = 600;
+export const LAND_S = 60;
 // A `once` job is given up for its window after this many failed runs.
 export const MAX_TRIES = 3;
 
@@ -32,7 +37,7 @@ export const MAX_TRIES = 3;
  * What the ticker starts in the target repository, and when; workflows by numeric id, like the
  * repository. Windows are [from, to) as HHMM in the job's time zone, optionally limited to ISO
  * weekdays (1 = Monday) or days of the month.
- * - every: on every tick inside a window, unless a counted run started < POKE_GAP_S ago;
+ * - every: once per SLOT_S slot inside a window (see SLOT_S);
  * - once:  once per window — skipped while a run created since the window opened is active or
  *          has succeeded (runs titled "dry-run" do not count), given up after MAX_TRIES failures.
  * The target's own cron slots sit inside these windows, so a cron run that does fire counts.
@@ -114,11 +119,11 @@ export function pokeDecision(targetRuns, { now, job = JOBS[0], since = null }) {
     if (mine.length >= MAX_TRIES) return { poke: false, reason: `gave up: ${mine.length} failed runs in this window` };
     return { poke: true };
   }
-  const last = targetRuns
-    .filter((r) => COUNTED_MODES.has((r.displayTitle ?? '').trim().split(/\s+/)[1]))
-    .map((r) => ageOf(r, now))
-    .sort((a, b) => a - b)[0];
-  if (last != null && last < POKE_GAP_S) return { poke: false, reason: `target already started ${last}s ago` };
+  const slotOf = (t) => Math.floor((t + LAND_S) / SLOT_S);
+  const failed = (r) => r.status === 'completed' && r.conclusion != null && r.conclusion !== 'success';
+  const here = targetRuns.find((r) => COUNTED_MODES.has((r.displayTitle ?? '').trim().split(/\s+/)[1])
+    && !failed(r) && slotOf(Math.floor(Date.parse(r.createdAt) / 1000)) === slotOf(now));
+  if (here) return { poke: false, reason: `this slot has its run (started ${ageOf(here, now)}s ago)` };
   return { poke: true };
 }
 

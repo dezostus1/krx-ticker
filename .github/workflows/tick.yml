@@ -1,6 +1,6 @@
 # Two self-restarting chains (A, B) on a 10-minute environment wait timer;
 # each tick dispatches the target repo's workflows whose time window is open
-# (chains.mjs JOBS: some on every tick, some once per window). The target is
+# (chains.mjs JOBS: some once per 10-minute slot, some once per window). The target is
 # addressed by numeric id; private, so the id resolves only with the token.
 # Decisions: chains.mjs. Setup: README.md.
 

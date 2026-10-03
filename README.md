@@ -2,7 +2,7 @@
 
 A scheduler: two self-restarting chains of `workflow_dispatch` runs, ~10 minutes
 apart, that dispatch workflows in another repository during set time windows —
-some on every tick, some once per window (`JOBS` in `chains.mjs`).
+some once per 10-minute slot, some once per window (`JOBS` in `chains.mjs`).
 
 ## Setup
 

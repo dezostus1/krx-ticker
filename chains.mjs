@@ -23,13 +23,17 @@ export const ZOMBIE_AFTER_S = 900;
 // old; with runner pick-up and the 5-minute job timeout, one still "in
 // progress" 20 min after dispatch is not coming back.
 export const RUNNING_MAX_AGE_S = 1200;
-// An `every` job runs once per SLOT_S slot: a tick pokes unless a run that did not fail is
-// already due to land in the slot this poke would land in (a run lands ~LAND_S after it is
-// started). Two chains tick about every 5 minutes between them, so every slot gets its run
-// even though each chain drifts (2026-10-02: a "not within 8 minutes" rule let one 10-minute
-// slot in ~20 go empty), and a failed run is retried within its slot.
+// An `every` job runs once per SLOT_S slot: a tick pokes unless every slot this poke could land
+// in already has a run that did not fail, and a failed run is retried within its slot. A run
+// takes its snapshot LAND_MIN_S..LAND_MAX_S after it is created (measured 2026-10-02/06: the
+// time stamped 7-17 s after dispatch; one runner pick-up of 80 s in 80 runs). A run created
+// so close to a slot's end that this band crosses into the next slot counts for neither, so
+// the other chain's tick 90 s later pokes again — at most a duplicate snapshot. Until
+// 2026-10-07 a run was placed at "created + 60 s": one created 12 s before 09:30 KST was
+// counted for 09:30, stamped 09:29, and slot 09:30 stayed empty (10-02 and 10-06).
 export const SLOT_S = 600;
-export const LAND_S = 60;
+export const LAND_MIN_S = 5;
+export const LAND_MAX_S = 30;
 // A `once` job is given up for its window after this many failed runs.
 export const MAX_TRIES = 3;
 
@@ -119,11 +123,19 @@ export function pokeDecision(targetRuns, { now, job = JOBS[0], since = null }) {
     if (mine.length >= MAX_TRIES) return { poke: false, reason: `gave up: ${mine.length} failed runs in this window` };
     return { poke: true };
   }
-  const slotOf = (t) => Math.floor((t + LAND_S) / SLOT_S);
+  // The slots a run created at t can land in: one, or two when the band crosses a boundary.
+  const slotsOf = (t) => [...new Set([t + LAND_MIN_S, t + LAND_MAX_S].map((x) => Math.floor(x / SLOT_S)))];
   const failed = (r) => r.status === 'completed' && r.conclusion != null && r.conclusion !== 'success';
-  const here = targetRuns.find((r) => COUNTED_MODES.has((r.displayTitle ?? '').trim().split(/\s+/)[1])
-    && !failed(r) && slotOf(Math.floor(Date.parse(r.createdAt) / 1000)) === slotOf(now));
-  if (here) return { poke: false, reason: `this slot has its run (started ${ageOf(here, now)}s ago)` };
+  const covered = new Map();
+  for (const r of targetRuns) {
+    if (!COUNTED_MODES.has((r.displayTitle ?? '').trim().split(/\s+/)[1]) || failed(r)) continue;
+    const s = slotsOf(Math.floor(Date.parse(r.createdAt) / 1000));
+    if (s.length === 1 && !covered.has(s[0])) covered.set(s[0], r);
+  }
+  const mine = slotsOf(now);
+  if (mine.every((s) => covered.has(s))) {
+    return { poke: false, reason: `this slot has its run (started ${ageOf(covered.get(mine.at(-1)), now)}s ago)` };
+  }
   return { poke: true };
 }
 

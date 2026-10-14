@@ -1,0 +1,78 @@
+# A job of the target repository, run here on a public repository's free Actions minutes
+# (2026-10-14). tick.yml dispatches it (chains.mjs JOBS with workflow 'job.yml'). The target is
+# the secret TARGET_REPO, reached over SSH with the deploy key TARGET_KEY (write access to that
+# repository only); the job is the target's own script, scripts/jobs/<job>.sh, run from a clone.
+# JOB_SECRETS, a JSON object of NAME -> value, becomes the job's environment, each value masked
+# in the log first. No action from outside GitHub; setup-node pinned to its commit.
+
+name: job
+run-name: ${{ inputs.job }} ${{ inputs.args }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'ten-minute | nightly'
+        required: true
+      args:
+        description: "the job script's argument"
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: job-${{ inputs.job }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.job == 'nightly' && 15 || 10 }}
+    steps:
+      - name: The job's secrets, masked
+        env:
+          JOB_SECRETS: ${{ secrets.JOB_SECRETS }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const all = JSON.parse(process.env.JOB_SECRETS || "{}");
+            for (const [name, value] of Object.entries(all)) {
+              if (!/^[A-Z][A-Z0-9_]*$/.test(name) || typeof value !== "string" || !value) continue;
+              console.log("::add-mask::" + value);
+              fs.appendFileSync(process.env.GITHUB_ENV, name + "<<__JOB_SECRET__\n" + value + "\n__JOB_SECRET__\n");
+            }'
+
+      - name: Deploy key
+        env:
+          TARGET_KEY: ${{ secrets.TARGET_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$TARGET_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # GitHub's published host keys (api.github.com/meta), pinned
+          cat > ~/.ssh/known_hosts <<'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+
+      - name: Clone the target (scripts only; the job takes what else it reads)
+        env:
+          TARGET_REPO: ${{ secrets.TARGET_REPO }}
+        run: |
+          git clone -q --filter=blob:none --sparse "git@github.com:${TARGET_REPO}.git" src
+          git -C src sparse-checkout add scripts
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+
+      - name: Run the job
+        working-directory: src
+        env:
+          JOB: ${{ inputs.job }}
+          ARGS: ${{ inputs.args }}
+        run: |
+          case "$JOB" in ten-minute | nightly) ;; *) echo "::error::unknown job $JOB"; exit 2 ;; esac
+          bash "scripts/jobs/$JOB.sh" $ARGS

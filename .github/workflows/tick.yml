@@ -1,6 +1,7 @@
 # Two self-restarting chains (A, B) on a 10-minute environment wait timer;
-# each tick dispatches the target repo's workflows whose time window is open
-# (chains.mjs JOBS: some once per 10-minute slot, some once per window). The target is
+# each tick dispatches the jobs whose time window is open (chains.mjs JOBS: some
+# once per 10-minute slot, some once per window) — job.yml here, on this
+# repository's free minutes, or the target repo's workflows. The target is
 # addressed by numeric id; private, so the id resolves only with the token.
 # Decisions: chains.mjs. Setup: README.md.
 
@@ -79,15 +80,19 @@ jobs:
           if [ "$CHAIN" = B ]; then sleep 90; fi
           failed=0
           while read -r -u 3 job wf since; do
-            api="repositories/$TARGET_REPO_ID/actions/workflows/$wf"
-            if ! GH_TOKEN="$POKE_TOKEN" gh api "$api/runs?per_page=20" \
+            # job.yml: a job of this repository, run on its free minutes; else the target's workflow by id
+            case "$wf" in
+              *.yml) api="repos/$GITHUB_REPOSITORY/actions/workflows/$wf"; tok="$GH_TOKEN"; n=50 ;;
+              *) api="repositories/$TARGET_REPO_ID/actions/workflows/$wf"; tok="$POKE_TOKEN"; n=20 ;;
+            esac
+            if ! GH_TOKEN="$tok" gh api "$api/runs?per_page=$n" \
                 --jq '[.workflow_runs[] | {createdAt: .created_at, displayTitle: .display_title, status: .status, conclusion: .conclusion}]' > target.json; then
               echo "::warning::$job: could not list its runs"; failed=1; continue
             fi
             decision=$(node chains.mjs poke --job "$job" --since "$since" --runs target.json --now "$(date +%s)")
             if [ "$decision" != poke ]; then echo "$job: $decision"; continue; fi
             node chains.mjs body --job "$job" > body.json
-            if GH_TOKEN="$POKE_TOKEN" gh api -X POST "$api/dispatches" --input body.json; then
+            if GH_TOKEN="$tok" gh api -X POST "$api/dispatches" --input body.json; then
               echo "$job: dispatched (chain ${CHAIN:-none})"
             else
               echo "::warning::$job: dispatch failed"; failed=1

@@ -38,8 +38,9 @@ export const LAND_MAX_S = 30;
 export const MAX_TRIES = 3;
 
 /**
- * What the ticker starts in the target repository, and when; workflows by numeric id, like the
- * repository. Windows are [from, to) as HHMM in the job's time zone, optionally limited to ISO
+ * What the ticker starts, and when: a job of this repository's job.yml (`workflow: 'job.yml'`,
+ * `inputs.job` naming it — since 2026-10-14, on this repository's free minutes), or a workflow of
+ * the target repository by numeric id, like the repository. Windows are [from, to) as HHMM in the job's time zone, optionally limited to ISO
  * weekdays (1 = Monday) or days of the month.
  * - every: once per SLOT_S slot inside a window (see SLOT_S);
  * - once:  once per window — skipped while a run created since the window opened is active or
@@ -48,7 +49,7 @@ export const MAX_TRIES = 3;
  */
 export const JOBS = [
   {
-    name: 'ten-minute', workflow: 365292156, rule: 'every', inputs: { mode: 'auto' }, tz: 'Asia/Seoul',
+    name: 'ten-minute', workflow: 'job.yml', rule: 'every', inputs: { job: 'ten-minute', args: 'auto' }, tz: 'Asia/Seoul',
     windows: [
       { days: [1, 2, 3, 4, 5], from: 850, to: 1551 },
       { from: 2005, to: 2020 },
@@ -56,7 +57,7 @@ export const JOBS = [
     ],
   },
   // before midnight where the target counts its days, after the US close in every season
-  { name: 'nightly', workflow: 373038400, rule: 'once', inputs: { dry_run: 'false' }, tz: 'Europe/Madrid', windows: [{ days: [1, 2, 3, 4, 5], from: 2230, to: 2400 }] },
+  { name: 'nightly', workflow: 'job.yml', rule: 'once', inputs: { job: 'nightly', args: 'write' }, tz: 'Europe/Madrid', windows: [{ days: [1, 2, 3, 4, 5], from: 2230, to: 2400 }] },
   { name: 'morning', workflow: 372734760, rule: 'once', inputs: {}, tz: 'UTC', windows: [{ from: 530, to: 900 }] },
   { name: 'monthly', workflow: 373038402, rule: 'once', inputs: { dry_run: 'false' }, tz: 'UTC', windows: [{ monthDays: [1], from: 315, to: 600 }] },
 ];
@@ -114,8 +115,12 @@ export function planChains(runs, { me, now }) {
 // `every` job titles are "<workflow> <mode>"; only these modes (or none) count.
 const COUNTED_MODES = new Set([undefined, 'auto', 'schedule', 'snapshot', 'all']);
 
+/** A job of job.yml: its runs are those titled "<job> <args>" (job.yml's run-name). */
+export const isLocal = (job) => typeof job.workflow === 'string';
 /** Whether to dispatch `job` now, given its recent runs (newest first or any order). */
-export function pokeDecision(targetRuns, { now, job = JOBS[0], since = null }) {
+export function pokeDecision(allRuns, { now, job = JOBS[0], since = null }) {
+  // job.yml runs every local job: only this job's runs count for it
+  const targetRuns = job.inputs?.job ? allRuns.filter((r) => (r.displayTitle ?? '').trim().split(/\s+/)[0] === job.inputs.job) : allRuns;
   if (job.rule === 'once') {
     const mine = targetRuns.filter((r) => Math.floor(Date.parse(r.createdAt) / 1000) >= since && !/dry.?run/i.test(r.displayTitle ?? ''));
     if (mine.some((r) => r.status !== 'completed')) return { poke: false, reason: 'a run of this window is still going' };

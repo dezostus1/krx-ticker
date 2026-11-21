@@ -41,7 +41,7 @@ export const MAX_TRIES = 3;
  * What the ticker starts, and when: a job of this repository's job.yml (`workflow: 'job.yml'`,
  * `inputs.job` naming it — since 2026-10-14, on this repository's free minutes), or a workflow of
  * the target repository by numeric id, like the repository. Windows are [from, to) as HHMM in the job's time zone, optionally limited to ISO
- * weekdays (1 = Monday) or days of the month.
+ * weekdays (1 = Monday), days of the month or dates (YYYY-MM-DD in that time zone).
  * - every: once per SLOT_S slot inside a window (see SLOT_S);
  * - once:  once per window — skipped while a run created since the window opened is active or
  *          has succeeded (runs titled "dry-run" do not count), given up after MAX_TRIES failures.
@@ -52,6 +52,8 @@ export const JOBS = [
     name: 'ten-minute', workflow: 'job.yml', rule: 'every', inputs: { job: 'ten-minute', args: 'auto' }, tz: 'Asia/Seoul',
     windows: [
       { days: [1, 2, 3, 4, 5], from: 850, to: 1551 },
+      // the sessions that close an hour late (16:30 KST): the window runs on to the last book of the day
+      { dates: ['2024-11-14', '2025-11-13', '2026-11-19', '2027-11-18'], from: 1551, to: 1651 },
       { from: 2005, to: 2020 },
       { from: 600, to: 615 },
     ],
@@ -71,12 +73,15 @@ const PENDING = new Set(['waiting', 'queued', 'pending', 'requested']);
 const ageOf = (run, now) => now - Math.floor(Date.parse(run.createdAt) / 1000);
 const WEEKDAY = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
 
-/** Weekday (1 = Monday), day of the month, hour, minute, second of `now` in `tz`. */
+/** Weekday (1 = Monday), day of the month, date (YYYY-MM-DD), hour, minute, second of `now` in `tz`. */
 export function localTime(now, tz) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz, weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    timeZone: tz, weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   }).formatToParts(new Date(now * 1000)).map((p) => [p.type, p.value]));
-  return { dow: WEEKDAY[parts.weekday], day: Number(parts.day), h: Number(parts.hour), m: Number(parts.minute), s: Number(parts.second) };
+  return {
+    dow: WEEKDAY[parts.weekday], day: Number(parts.day), date: `${parts.year}-${parts.month}-${parts.day}`,
+    h: Number(parts.hour), m: Number(parts.minute), s: Number(parts.second),
+  };
 }
 
 /** The jobs whose window is open at `now`: [{job, since}] — since = the window's start, epoch s. */
@@ -86,7 +91,7 @@ export function dueJobs(now, jobs = JOBS) {
     const t = localTime(now, job.tz);
     const hm = t.h * 100 + t.m;
     const w = job.windows.find((x) => hm >= x.from && hm < x.to
-      && (!x.days || x.days.includes(t.dow)) && (!x.monthDays || x.monthDays.includes(t.day)));
+      && (!x.days || x.days.includes(t.dow)) && (!x.monthDays || x.monthDays.includes(t.day)) && (!x.dates || x.dates.includes(t.date)));
     if (!w) continue;
     const intoWindow = (t.h * 60 + t.m - (Math.floor(w.from / 100) * 60 + (w.from % 100))) * 60 + t.s;
     out.push({ job, since: now - intoWindow });
